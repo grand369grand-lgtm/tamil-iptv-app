@@ -18,7 +18,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          # cache removed to avoid lockfile error
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -36,7 +36,6 @@ jobs:
 
       - name: Fix common Expo issues
         run: |
-          # Ensure package name is set
           node -e "
             const fs = require('fs');
             const app = JSON.parse(fs.readFileSync('app.json', 'utf8'));
@@ -51,20 +50,17 @@ jobs:
       - name: Expo Prebuild (Android)
         run: |
           npx expo prebuild --platform android --clean || {
-            echo "Prebuild failed, retrying with --no-install..."
+            echo "Prebuild failed, retrying..."
             npx expo prebuild --platform android --no-install || true
           }
 
       - name: Fix Gradle / Android build issues
         run: |
-          # Common fixes
           if [ -f android/gradle.properties ]; then
             echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
             echo "android.useAndroidX=true" >> android/gradle.properties
             echo "android.enableJetifier=true" >> android/gradle.properties
           fi
-
-          # Make sure local.properties exists
           if [ ! -f android/local.properties ]; then
             echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           fi
@@ -86,8 +82,7 @@ jobs:
         run: |
           echo "Retrying full build after fixes..."
           cd android
-          ./gradlew clean
-          # Try debug first to verify
+          ./gradlew clean || true
           ./gradlew assembleDebug --stacktrace || true
           ./gradlew assembleRelease --stacktrace --no-daemon
 
@@ -114,5 +109,4 @@ jobs:
           name: build-logs
           path: |
             android/app/build/outputs/
-            **/*.log
           if-no-files-found: ignore
