@@ -1,0 +1,118 @@
+name: Build Release APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: |
+          npm install --legacy-peer-deps || npm install
+          npx expo install --fix || true
+
+      - name: Fix common Expo issues
+        run: |
+          # Ensure package name is set
+          node -e "
+            const fs = require('fs');
+            const app = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            if (!app.expo.android) app.expo.android = {};
+            if (!app.expo.android.package) {
+              app.expo.android.package = 'com.tamil.iptvapp';
+              fs.writeFileSync('app.json', JSON.stringify(app, null, 2));
+              console.log('Added android.package');
+            }
+          "
+
+      - name: Expo Prebuild (Android)
+        run: |
+          npx expo prebuild --platform android --clean || {
+            echo "Prebuild failed, retrying with --no-install..."
+            npx expo prebuild --platform android --no-install || true
+          }
+
+      - name: Fix Gradle / Android build issues
+        run: |
+          # Common fixes
+          if [ -f android/gradle.properties ]; then
+            echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m" >> android/gradle.properties
+            echo "android.useAndroidX=true" >> android/gradle.properties
+            echo "android.enableJetifier=true" >> android/gradle.properties
+          fi
+
+          # Make sure local.properties exists
+          if [ ! -f android/local.properties ]; then
+            echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          fi
+
+      - name: Build Release APK
+        id: build
+        continue-on-error: true
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace --no-daemon || {
+            echo "First build failed, cleaning and retrying..."
+            ./gradlew clean
+            ./gradlew assembleRelease --stacktrace --no-daemon
+          }
+
+      - name: Retry build if failed
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "Retrying full build after fixes..."
+          cd android
+          ./gradlew clean
+          # Try debug first to verify
+          ./gradlew assembleDebug --stacktrace || true
+          ./gradlew assembleRelease --stacktrace --no-daemon
+
+      - name: Find and list APK
+        run: |
+          echo "Looking for APK files..."
+          find android -name "*.apk" -type f || true
+          ls -lh android/app/build/outputs/apk/release/ || true
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: tamil-iptv-release-apk
+          path: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            android/app/build/outputs/
+            **/*.log
+          if-no-files-found: ignore
